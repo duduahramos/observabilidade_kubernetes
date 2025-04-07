@@ -28,12 +28,7 @@ data:
 
     exporters:
       otlp/jaeger:
-        endpoint: jaeger:4317
-        tls:
-          insecure: true
-
-      otlp:
-        endpoint: tempo:4319
+        endpoint: jaeger-service.telemetry.svc.cluster.local:4317
         tls:
           insecure: true
 
@@ -55,7 +50,7 @@ data:
         traces:
           receivers: [otlp]
           processors: [batch]
-          exporters: [otlp, otlp/jaeger]
+          exporters: [otlp/jaeger]
 
         metrics:
           receivers: [otlp]

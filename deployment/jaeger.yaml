@@ -20,6 +20,8 @@ spec:
           image: jaegertracing/jaeger:2.4.0 # imagem para produção
           ports:
             - containerPort: 16686 # Porta da UI
+            - containerPort: 4317 # Porta OTLP gRPC
+            - containerPort: 43178 # Porta OTLP http
           resources:
             limits:
               memory: "512Mi"
@@ -40,4 +42,13 @@ spec:
     - protocol: TCP
       port: 16686
       targetPort: 16686
+      name: jaeger-ui
+    - protocol: TCP
+      port: 4317
+      targetPort: 4317
+      name: jaeger-grpc
+    - protocol: TCP
+      port: 4318
+      targetPort: 4318
+      name: jaeger-http
   type: ClusterIP
