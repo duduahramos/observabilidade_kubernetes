@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: telemetry
+  labels:
+    app: otel-collector
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+            cors:
+              allowed_origins:
+                - http://localhost:3000
+                - http://127.0.0.1:3000
+                - http://localhost
+                - http://127.0.0.1
+
+    processors:
+      batch:
+        send_batch_size: 1024
+        timeout: 5s
+
+    exporters:
+      otlp/jaeger:
+        endpoint: jaeger:4317
+        tls:
+          insecure: true
+
+      otlp:
+        endpoint: tempo:4319
+        tls:
+          insecure: true
+
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+
+      loki:
+        endpoint: http://loki-service.telemetry.svc.cluster.local:3100/loki/api/v1/push
+        tls:
+          insecure: true
+
+    service:
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [loki]
+
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp, otlp/jaeger]
+
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [prometheus]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: telemetry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.86.0
+          # image: otel/opentelemetry-collector-contrib:0.122.1
+          # image: otel/opentelemetry-collector:latest
+          args:
+            ["--config=/etc/otel-collector-config/otel-collector-config.yaml"]
+          ports:
+            - containerPort: 8889
+              name: pmts-metrics
+            - containerPort: 4317
+              name: grpc
+            - containerPort: 4318
+              name: http
+          volumeMounts:
+            - name: otel-collector-config
+              mountPath: /etc/otel-collector-config
+              readOnly: true
+      volumes:
+        - name: otel-collector-config
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-service
+  namespace: telemetry
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - protocol: TCP
+      port: 4317
+      targetPort: 4317
+      name: grpc
+    - protocol: TCP
+      port: 4318
+      targetPort: 4318
+      name: http
+  type: NodePort

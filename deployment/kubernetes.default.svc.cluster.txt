@@ -1,0 +1,24 @@
+kubernetes.default.svc.cluster.local
+
+
+kubernetes    -> nome do serviço
+default       -> namespace padrao do kubernetes
+svc           -> tipo de serviço (svc = service | kind: service)
+cluster.local -> nome do cluster
+
+
+minikube delete
+minikube start
+kubectl apply -f .\namespace\telemetry.yaml
+kubectl apply -f .\volume\loki-pv.yaml
+kubectl apply -f .\volume\loki-pvc.yaml
+kubectl apply -f .\deployment\promtail.yaml
+kubectl apply -f .\deployment\loki.yaml
+kubectl apply -f .\deployment\jaeger.yaml
+kubectl apply -f .\deployment\prometheus.yaml
+kubectl apply -f .\deployment\otel-collector.yaml
+kubectl apply -f .\deployment\grafana.yaml
+
+kubectl delete -f .\namespace\telemetry.yaml
+kubectl apply -f .\namespace\telemetry.yaml
+kubectl apply -f .\deployment\otel-collector.yaml

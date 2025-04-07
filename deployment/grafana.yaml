@@ -1,0 +1,147 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: telemetry
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.6.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_PATHS_PROVISIONING
+              value: "/etc/grafana/provisioning"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Admin"
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "true"
+            - name: GF_FEATURE_TOGGLES_ENABLE
+              value: "traceqlEditor"
+          volumeMounts:
+            - name: grafana-config
+              mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              subPath: datasources.yaml
+      volumes:
+        - name: grafana-config
+          configMap:
+            name: grafana-datasources
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: telemetry
+  labels:
+    app: grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+
+    datasources:
+      
+      - name: Loki
+        type: loki
+        uid: loki
+        access: proxy
+        orgId: 1
+        url: http://loki-service.telemetry.svc.cluster.local:3100
+        basicAuth: false
+        isDefault: true
+        version: 1
+        editable: false
+
+      - name: Jaeger
+        type: jaeger
+        url: http://jaeger-service.telemetry.svc.cluster.local:16686
+        access: proxy
+        basicAuth: false
+        readOnly: false
+        isDefault: false
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: '1h'
+            spanEndTimeShift: '-1h'
+            tags: ['job', 'instance', 'pod', 'namespace']
+            filterByTraceID: false
+            filterBySpanID: false
+            customQuery: true
+            query: 'method="${__span.tags.method}"'
+          tracesToMetrics:
+            datasourceUid: prometheus
+            spanStartTimeShift: '1h'
+            spanEndTimeShift: '-1h'
+            tags: [{ key: 'service.name', value: 'service' }, { key: 'job' }]
+            queries:
+              - name: 'Query exemplo'
+                query: 'sum(rate(traces_spanmetrics_latency_bucket{${METHOD_VAR}}[5m]))'
+          nodeGraph:
+            enabled: true
+          traceQuery:
+            timeShiftEnabled: true
+            spanStartTimeShift: '1h'
+            spanEndTimeShift: '-1h'
+          spanBar:
+            type: 'None'
+        secureJsonData:
+          basicAuthPassword: my_password
+
+      - name: Tempo
+        type: tempo
+        access: proxy
+        orgId: 1
+        url: http://tempo-service.telemetry.svc.cluster.local:3200
+        basicAuth: false
+        isDefault: false
+        version: 1
+        editable: false
+        apiVersion: 1
+        uid: tempo
+        jsonData:
+          httpMethod: GET
+          serviceMap:
+            datasourceUid: prometheus
+
+      - name: Prometheus
+        type: prometheus
+        uid: prometheus
+        access: proxy
+        orgId: 1
+        url: http://prometheus-service.telemetry.svc.cluster.local:9090
+        basicAuth: false
+        isDefault: false
+        version: 1
+        editable: false
+        jsonData:
+          httpMethod: GET
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-service
+  namespace: telemetry
+  labels:
+    app: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+    - protocol: TCP
+      port: 3333
+      targetPort: 3000
+      nodePort: 31000
+  type: NodePort

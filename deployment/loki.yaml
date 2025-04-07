@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: telemetry
+  labels:
+    app: loki
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      containers:
+        - name: loki
+          image: grafana/loki:3.4.2
+          ports:
+            - containerPort: 3100
+          env:
+            - name: TZ
+              value: America/Sao_Paulo
+          volumeMounts:
+            - name: loki-config
+              mountPath: /etc/loki/local-config.yaml
+              subPath: local-config.yaml
+            - name: loki-data
+              mountPath: /tmp
+          command: ["/usr/bin/loki", "-config.file=/etc/loki/local-config.yaml"]
+          resources:
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          # restartPolicy: Always
+      volumes:
+        - name: loki-config
+          configMap:
+            name: loki-config
+        - name: loki-data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: telemetry
+data:
+  local-config.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9096
+
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /tmp/loki
+      storage:
+        filesystem:
+          chunks_directory: /tmp/loki/chunks
+          rules_directory: /tmp/loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    query_range:
+      results_cache:
+        cache:
+          embedded_cache:
+            enabled: true
+            max_size_mb: 100
+
+    querier:
+      max_concurrent: 500  # Adjust based on CPU and memory
+
+    query_scheduler:
+      max_outstanding_requests_per_tenant: 1000  # Adjust based on load
+
+    frontend:
+      max_outstanding_per_tenant: 2000  # Adjust based on load
+
+    limits_config:
+      max_global_streams_per_user: 5000  # Adjust based on actual usage
+      ingestion_rate_mb: 50  # Adjust based on actual load
+      per_stream_rate_limit: 50MB  # Adjust based on actual load
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-service
+  namespace: telemetry
+  labels:
+    app: loki
+spec:
+  selector:
+    app: loki
+  ports:
+    - protocol: TCP
+      port: 3100
+      targetPort: 3100
+  type: ClusterIP
