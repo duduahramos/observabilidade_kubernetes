@@ -1,0 +1,605 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: telemetry
+data:
+  promtail-config.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+
+    positions:
+      filename: /tmp/positions.yaml
+
+    clients:
+      - url: http://loki-service.telemetry.svc.cluster.local:3100/loki/api/v1/push
+
+    scrape_configs:
+      - job_name: insurance-hub-job
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: app-dev-logs
+              __path__: /var/log/app-dev-logs.log
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: promtail
+  namespace: telemetry
+  labels:
+    app: promtail
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: promtail
+  template:
+    metadata:
+      labels:
+        app: promtail
+    spec:
+      containers:
+        - name: promtail
+          image: grafana/promtail:latest
+          env:
+            - name: TZ
+              value: America/Sao_Paulo
+          volumeMounts:
+            # - name: log-volume
+            #   mountPath: /var/log/app-dev-logs.log
+            #   subPath: app-dev-logs.log
+            # - name: promtail-config
+            #   mountPath: /etc/promtail/promtail-config.yaml
+            #   subPath: promtail-config.yaml
+            - name: log-volume
+              mountPath: /var/log
+            - name: promtail-config
+              mountPath: /etc/promtail-config/promtail-config.yaml
+              subPath: promtail-config.yaml
+          command:
+            [
+              "/usr/bin/promtail",
+              "-config.file=/etc/promtail-config/promtail-config.yaml",
+            ]
+          resources:
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+      volumes:
+        - name: log-volume
+          hostPath:
+            path: /var/log
+            type: Directory
+        - name: promtail-config
+          configMap:
+            name: promtail-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: promtail-service
+  namespace: telemetry
+  labels:
+    app: promtail
+spec:
+  selector:
+    app: promtail
+  ports:
+    - protocol: TCP
+      port: 9080
+      targetPort: 9080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: telemetry
+data:
+  local-config.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9096
+
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /tmp/loki
+      storage:
+        filesystem:
+          chunks_directory: /tmp/loki/chunks
+          rules_directory: /tmp/loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    query_range:
+      results_cache:
+        cache:
+          embedded_cache:
+            enabled: true
+            max_size_mb: 100
+
+    querier:
+      max_concurrent: 500  # Adjust based on CPU and memory
+
+    query_scheduler:
+      max_outstanding_requests_per_tenant: 1000  # Adjust based on load
+
+    frontend:
+      max_outstanding_per_tenant: 2000  # Adjust based on load
+
+    limits_config:
+      max_global_streams_per_user: 5000  # Adjust based on actual usage
+      ingestion_rate_mb: 50  # Adjust based on actual load
+      per_stream_rate_limit: 50MB  # Adjust based on actual load
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: telemetry
+  labels:
+    app: loki
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      containers:
+        - name: loki
+          image: grafana/loki:3.4.2
+          ports:
+            - containerPort: 3100
+          env:
+            - name: TZ
+              value: America/Sao_Paulo
+          volumeMounts:
+            - name: loki-config
+              mountPath: /etc/loki/local-config.yaml
+              subPath: local-config.yaml
+            - name: loki-data
+              mountPath: /tmp
+          command: ["/usr/bin/loki", "-config.file=/etc/loki/local-config.yaml"]
+          resources:
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          # restartPolicy: Always
+      volumes:
+        - name: loki-config
+          configMap:
+            name: loki-config
+        - name: loki-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-service
+  namespace: telemetry
+  labels:
+    app: loki
+spec:
+  selector:
+    app: loki
+  ports:
+    - protocol: TCP
+      port: 3100
+      targetPort: 3100
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: telemetry
+data:
+  prometheus.yaml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 30s
+
+    scrape_configs:      
+      - job_name: 'otel-collector'
+        static_configs:
+          - targets: ['otel-collector-service.telemetry.svc.cluster.local:8889']
+
+
+    # NOTE: Application will push metrics to port 4317,
+    # then otel-collector-config prometheus part will scrape metrics from there and put to port 8889,
+    # and then from there prometheus-config will scrape metrics from port 8889 and forward
+    # them to prometheus that grafana can visualize from port 9090 (prometheus port).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: telemetry
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.3.0-rc.0
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus/prometheus.yaml
+              subPath: prometheus.yaml
+          resources:
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          command:
+            ["/bin/prometheus", "--config.file=/etc/prometheus/prometheus.yaml"]
+      volumes:
+        - name: prometheus-config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-service
+  namespace: telemetry
+  labels:
+    app: prometheus
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - protocol: TCP
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: telemetry
+  labels:
+    app: jaeger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+    spec:
+      containers:
+        - name: jaeger
+          image: jaegertracing/jaeger:2.4.0 # imagem para produção
+          ports:
+            - containerPort: 16686 # Porta da UI
+            - containerPort: 4317 # Porta OTLP gRPC
+            - containerPort: 43178 # Porta OTLP http
+          resources:
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          # restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-service
+  namespace: telemetry
+  labels:
+    app: jaeger
+spec:
+  selector:
+    app: jaeger
+  ports:
+    - protocol: TCP
+      port: 16686
+      targetPort: 16686
+      name: jaeger-ui
+    - protocol: TCP
+      port: 4317
+      targetPort: 4317
+      name: jaeger-grpc
+    - protocol: TCP
+      port: 4318
+      targetPort: 4318
+      name: jaeger-http
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: telemetry
+  labels:
+    app: otel-collector
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+            cors:
+              allowed_origins:
+                - http://localhost:3000
+                - http://127.0.0.1:3000
+                - http://localhost
+                - http://127.0.0.1
+
+    processors:
+      batch:
+        send_batch_size: 1024
+        timeout: 5s
+
+    exporters:
+      otlp/jaeger:
+        endpoint: jaeger-service.telemetry.svc.cluster.local:4317
+        tls:
+          insecure: true
+
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+
+      loki:
+        endpoint: http://loki-service.telemetry.svc.cluster.local:3100/loki/api/v1/push
+        tls:
+          insecure: true
+
+    service:
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [loki]
+
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp/jaeger]
+
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [prometheus]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: telemetry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.86.0
+          # image: otel/opentelemetry-collector-contrib:0.122.1
+          # image: otel/opentelemetry-collector:latest
+          args:
+            ["--config=/etc/otel-collector-config/otel-collector-config.yaml"]
+          ports:
+            - containerPort: 8889
+              name: pmts-metrics
+            - containerPort: 4317
+              name: grpc
+            - containerPort: 4318
+              name: http
+          volumeMounts:
+            - name: otel-collector-config
+              mountPath: /etc/otel-collector-config
+              readOnly: true
+      volumes:
+        - name: otel-collector-config
+          configMap:
+            name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-service
+  namespace: telemetry
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - protocol: TCP
+      port: 4317
+      targetPort: 4317
+      name: grpc
+    - protocol: TCP
+      port: 4318
+      targetPort: 4318
+      name: http
+  type: NodePort
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: telemetry
+  labels:
+    app: grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+
+    datasources:
+      
+      - name: Loki
+        type: loki
+        uid: loki
+        access: proxy
+        orgId: 1
+        url: http://loki-service.telemetry.svc.cluster.local:3100
+        basicAuth: false
+        isDefault: true
+        version: 1
+        editable: false
+
+      - name: Jaeger
+        type: jaeger
+        url: http://jaeger-service.telemetry.svc.cluster.local:16686
+        access: proxy
+        basicAuth: false
+        readOnly: false
+        isDefault: false
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: '1h'
+            spanEndTimeShift: '-1h'
+            tags: ['job', 'instance', 'pod', 'namespace']
+            filterByTraceID: false
+            filterBySpanID: false
+            customQuery: true
+            query: 'method="${__span.tags.method}"'
+          tracesToMetrics:
+            datasourceUid: prometheus
+            spanStartTimeShift: '1h'
+            spanEndTimeShift: '-1h'
+            tags: [{ key: 'service.name', value: 'service' }, { key: 'job' }]
+            queries:
+              - name: 'Query exemplo'
+                query: 'sum(rate(traces_spanmetrics_latency_bucket{${METHOD_VAR}}[5m]))'
+          nodeGraph:
+            enabled: true
+          traceQuery:
+            timeShiftEnabled: true
+            spanStartTimeShift: '1h'
+            spanEndTimeShift: '-1h'
+          spanBar:
+            type: 'None'
+        secureJsonData:
+          basicAuthPassword: my_password
+
+      - name: Tempo
+        type: tempo
+        access: proxy
+        orgId: 1
+        url: http://tempo-service.telemetry.svc.cluster.local:3200
+        basicAuth: false
+        isDefault: false
+        version: 1
+        editable: false
+        apiVersion: 1
+        uid: tempo
+        jsonData:
+          httpMethod: GET
+          serviceMap:
+            datasourceUid: prometheus
+
+      - name: Prometheus
+        type: prometheus
+        uid: prometheus
+        access: proxy
+        orgId: 1
+        url: http://prometheus-service.telemetry.svc.cluster.local:9090
+        basicAuth: false
+        isDefault: false
+        version: 1
+        editable: false
+        jsonData:
+          httpMethod: GET
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: telemetry
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.6.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_PATHS_PROVISIONING
+              value: "/etc/grafana/provisioning"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Admin"
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "true"
+            - name: GF_FEATURE_TOGGLES_ENABLE
+              value: "traceqlEditor"
+          volumeMounts:
+            - name: grafana-config
+              mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              subPath: datasources.yaml
+      volumes:
+        - name: grafana-config
+          configMap:
+            name: grafana-datasources
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-service
+  namespace: telemetry
+  labels:
+    app: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+  type: LoadBalancer
